@@ -33,8 +33,14 @@ export class WebrtcDataPeer {
         this.initiator = opts.initiator;
         this.channelLabel = opts.channelLabel;
         this.iceGatheringTimeout = opts.iceGatheringTimeout ?? 5000;
-        this.fallbackMaxMessageSize = opts.fallbackMaxMessageSize ?? Number.POSITIVE_INFINITY;
-        this.maxBufferedAmount = opts.maxBufferedAmount ?? Number.POSITIVE_INFINITY;
+        this.fallbackMaxMessageSize = validateLimit(
+            "fallbackMaxMessageSize",
+            opts.fallbackMaxMessageSize ?? Number.POSITIVE_INFINITY,
+        );
+        this.maxBufferedAmount = validateLimit(
+            "maxBufferedAmount",
+            opts.maxBufferedAmount ?? Number.POSITIVE_INFINITY,
+        );
         this.onOpen = opts.onOpen;
         this.onMessage = opts.onMessage;
         this.onClose = opts.onClose;
@@ -53,7 +59,25 @@ export class WebrtcDataPeer {
                 }),
             );
         } else {
-            this.pc.addEventListener("datachannel", (event) => this.attachChannel(event.channel));
+            this.pc.addEventListener("datachannel", (event) => {
+                const channel = event.channel;
+                if (this.closed) {
+                    channel.close();
+                } else if (channel.label !== this.channelLabel) {
+                    channel.close();
+                    this.onError(
+                        this,
+                        new Error(
+                            `Expected data channel label ${JSON.stringify(this.channelLabel)}, received ${JSON.stringify(channel.label)}`,
+                        ),
+                    );
+                } else if (this.channel) {
+                    channel.close();
+                    this.onError(this, new Error("Received an unexpected additional data channel"));
+                } else {
+                    this.attachChannel(channel);
+                }
+            });
         }
     }
 
@@ -122,12 +146,14 @@ export class WebrtcDataPeer {
 
     private attachPeerConnectionHandlers(): void {
         this.pc.addEventListener("connectionstatechange", () => {
+            if (this.closed) return;
             this.onDebug({ type: "rtc-connection-state", state: this.pc.connectionState });
             if (this.pc.connectionState === "failed" || this.pc.connectionState === "closed") {
                 this.destroy();
             }
         });
         this.pc.addEventListener("iceconnectionstatechange", () => {
+            if (this.closed) return;
             this.onDebug({ type: "rtc-ice-connection-state", state: this.pc.iceConnectionState });
             if (
                 this.pc.iceConnectionState === "failed" ||
@@ -139,18 +165,29 @@ export class WebrtcDataPeer {
     }
 
     private attachChannel(channel: RTCDataChannel): void {
+        if (this.closed || this.channel) {
+            channel.close();
+            return;
+        }
         this.channel = channel;
         channel.binaryType = "arraybuffer";
-        channel.addEventListener("open", () => this.onOpen(this));
+        channel.addEventListener("open", () => {
+            if (!this.closed && this.channel === channel) this.onOpen(this);
+        });
         channel.addEventListener("message", (event) => {
+            if (this.closed || this.channel !== channel) return;
             if (event.data instanceof ArrayBuffer) {
                 this.onMessage(this, event.data);
             } else {
                 this.onError(this, new Error("Expected an ArrayBuffer data channel message"));
             }
         });
-        channel.addEventListener("close", () => this.destroy());
-        channel.addEventListener("error", (event) => this.onError(this, event));
+        channel.addEventListener("close", () => {
+            if (!this.closed && this.channel === channel) this.destroy();
+        });
+        channel.addEventListener("error", (event) => {
+            if (!this.closed && this.channel === channel) this.onError(this, event);
+        });
     }
 
     private waitForIceGatheringComplete(): Promise<void> {
@@ -174,6 +211,14 @@ export class WebrtcDataPeer {
         });
     }
 }
+
+const validateLimit = (name: string, value: number): number => {
+    if (typeof value !== "number") throw new TypeError(`${name} must be a number`);
+    if (Number.isNaN(value) || value < 0) {
+        throw new RangeError(`${name} must be non-negative or Infinity`);
+    }
+    return value;
+};
 
 const descriptionToJSON = (
     description: RTCSessionDescription | null,

@@ -10,10 +10,12 @@ class FakeDataChannel {
     sendError = null;
 
     addEventListener(type, listener) {
-        this.listeners.set(type, listener);
+        const listeners = this.listeners.get(type) ?? [];
+        listeners.push(listener);
+        this.listeners.set(type, listeners);
     }
     dispatch(type, event = {}) {
-        this.listeners.get(type)?.(event);
+        for (const listener of this.listeners.get(type) ?? []) listener(event);
     }
     send(data) {
         if (this.sendError) throw this.sendError;
@@ -39,10 +41,19 @@ class FakePeerConnection {
         this.config = config;
     }
     addEventListener(type, listener) {
-        this.listeners.set(type, listener);
+        const listeners = this.listeners.get(type) ?? [];
+        listeners.push(listener);
+        this.listeners.set(type, listeners);
     }
     removeEventListener(type, listener) {
-        if (this.listeners.get(type) === listener) this.listeners.delete(type);
+        const listeners = this.listeners.get(type) ?? [];
+        this.listeners.set(
+            type,
+            listeners.filter((candidate) => candidate !== listener),
+        );
+    }
+    dispatch(type, event = {}) {
+        for (const listener of this.listeners.get(type) ?? []) listener(event);
     }
     createDataChannel(label, options) {
         this.channel.label = label;
@@ -140,7 +151,14 @@ test("enforces configured message and buffered-byte limits", () => {
     assert.equal(peer.send(new Uint8Array(3)), false);
     assert.match(String(events.errors.at(-1)), /3 bytes.*2-byte limit/);
 
+    peer.pc.sctp = { maxMessageSize: 2 };
+    assert.equal(peer.send(new Uint8Array(2)), true);
+    assert.equal(peer.send(new Uint8Array(3)), false);
+    assert.match(String(events.errors.at(-1)), /3 bytes.*2-byte limit/);
+
     peer.pc.sctp = { maxMessageSize: 0 };
+    peer.channel.bufferedAmount = 2;
+    assert.equal(peer.send(new Uint8Array(2)), true);
     peer.channel.bufferedAmount = 3;
     assert.equal(peer.send(new Uint8Array(2)), false);
     assert.match(String(events.errors.at(-1)), /buffered data.*4-byte limit/);
@@ -157,4 +175,93 @@ test("reports data channel send exceptions", () => {
     peer.destroy();
     assert.equal(peer.connected, false);
     assert.equal(peer.send(new Uint8Array([1])), false);
+});
+test("responder owns only the first matching data channel", () => {
+    const { peer, events } = createPeer({ initiator: false });
+    const mismatched = new FakeDataChannel();
+    mismatched.label = "other-channel";
+    peer.pc.dispatch("datachannel", { channel: mismatched });
+    assert.equal(mismatched.readyState, "closed");
+    assert.equal(peer.channel, null);
+    assert.equal(events.errors.length, 1);
+
+    const expected = new FakeDataChannel();
+    expected.label = "test-channel";
+    peer.pc.dispatch("datachannel", { channel: expected });
+    assert.equal(peer.channel, expected);
+    expected.readyState = "open";
+    expected.dispatch("open");
+    assert.equal(events.opens, 1);
+
+    const duplicate = new FakeDataChannel();
+    duplicate.label = "test-channel";
+    peer.pc.dispatch("datachannel", { channel: duplicate });
+    assert.equal(duplicate.readyState, "closed");
+    assert.equal(peer.channel, expected);
+    assert.equal(events.errors.length, 2);
+    peer.destroy();
+
+    const afterDestroy = new FakeDataChannel();
+    afterDestroy.label = "test-channel";
+    peer.pc.dispatch("datachannel", { channel: afterDestroy });
+    assert.equal(afterDestroy.readyState, "closed");
+    assert.equal(events.errors.length, 2);
+});
+
+test("owned channel callbacks are ignored after destroy", () => {
+    const { peer, events } = createPeer();
+    const channel = peer.channel;
+    peer.destroy();
+
+    channel.dispatch("open");
+    channel.dispatch("message", { data: new ArrayBuffer(1) });
+    channel.dispatch("error", new Error("late error"));
+
+    assert.equal(events.closes, 1);
+    assert.equal(events.opens, 0);
+    assert.deepEqual(events.messages, []);
+    assert.deepEqual(events.errors, []);
+});
+
+test("validates numeric send limits", () => {
+    for (const [option, value, ErrorType] of [
+        ["fallbackMaxMessageSize", Number.NaN, RangeError],
+        ["fallbackMaxMessageSize", -1, RangeError],
+        ["fallbackMaxMessageSize", -Infinity, RangeError],
+        ["maxBufferedAmount", Number.NaN, RangeError],
+        ["maxBufferedAmount", -1, RangeError],
+        ["maxBufferedAmount", "1", TypeError],
+    ]) {
+        assert.throws(() => createPeer({ [option]: value }), ErrorType);
+    }
+    const { peer } = createPeer({ fallbackMaxMessageSize: 0, maxBufferedAmount: Infinity });
+    peer.destroy();
+});
+
+test("waits for ICE completion and closes on failed connection state", async () => {
+    const { peer, events } = createPeer();
+    peer.pc.iceGatheringState = "gathering";
+    const creatingOffer = peer.createOffer();
+    await Promise.resolve();
+    await Promise.resolve();
+    peer.pc.iceGatheringState = "complete";
+    peer.pc.dispatch("icegatheringstatechange");
+
+    assert.deepEqual(await creatingOffer, { type: "offer", sdp: "offer" });
+    peer.pc.connectionState = "failed";
+    peer.pc.dispatch("connectionstatechange");
+    assert.equal(events.closes, 1);
+});
+
+test("ICE gathering timeout returns the current description", async (context) => {
+    context.mock.timers.enable({ apis: ["setTimeout"] });
+    const { peer } = createPeer({ iceGatheringTimeout: 100 });
+    peer.pc.iceGatheringState = "gathering";
+    const creatingOffer = peer.createOffer();
+    await Promise.resolve();
+    await Promise.resolve();
+    context.mock.timers.tick(100);
+
+    assert.deepEqual(await creatingOffer, { type: "offer", sdp: "offer" });
+    peer.destroy();
 });
