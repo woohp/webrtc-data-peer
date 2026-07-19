@@ -1,7 +1,7 @@
 export interface WebrtcDataPeerOptions {
     initiator: boolean;
     channelLabel: string;
-    channelOptions?: RTCDataChannelInit;
+    channelOptions?: Omit<RTCDataChannelInit, "negotiated" | "id">;
     rtcConfig?: RTCConfiguration | undefined;
     iceGatheringTimeout?: number;
     fallbackMaxMessageSize?: number;
@@ -42,6 +42,7 @@ export class WebrtcDataPeer {
             "maxBufferedAmount",
             opts.maxBufferedAmount ?? Number.POSITIVE_INFINITY,
         );
+        validateChannelOptions(opts.channelOptions);
         this.onOpen = opts.onOpen;
         this.onMessage = opts.onMessage;
         this.onClose = opts.onClose;
@@ -58,21 +59,19 @@ export class WebrtcDataPeer {
                     channel.close();
                 } else if (this.initiator) {
                     channel.close();
-                    this.onError(
-                        this,
+                    this.reportError(
                         new Error("Initiator received an unexpected remote data channel"),
                     );
                 } else if (channel.label !== this.channelLabel) {
                     channel.close();
-                    this.onError(
-                        this,
+                    this.reportError(
                         new Error(
                             `Expected data channel label ${JSON.stringify(this.channelLabel)}, received ${JSON.stringify(channel.label)}`,
                         ),
                     );
                 } else if (this.channel) {
                     channel.close();
-                    this.onError(this, new Error("Received an unexpected additional data channel"));
+                    this.reportError(new Error("Received an unexpected additional data channel"));
                 } else {
                     this.attachChannel(channel);
                 }
@@ -139,8 +138,7 @@ export class WebrtcDataPeer {
                 ? Number.POSITIVE_INFINITY
                 : (negotiatedMax ?? this.fallbackMaxMessageSize);
         if (data.byteLength > maxMessageSize) {
-            this.onError(
-                this,
+            this.reportError(
                 new Error(
                     `WebRTC message is ${data.byteLength} bytes, exceeding the ${maxMessageSize}-byte limit`,
                 ),
@@ -148,8 +146,7 @@ export class WebrtcDataPeer {
             return false;
         }
         if (this.channel.bufferedAmount + data.byteLength > this.maxBufferedAmount) {
-            this.onError(
-                this,
+            this.reportError(
                 new Error(
                     `WebRTC buffered data would exceed the ${this.maxBufferedAmount}-byte limit`,
                 ),
@@ -160,7 +157,7 @@ export class WebrtcDataPeer {
             this.channel.send(data);
             return true;
         } catch (error) {
-            this.onError(this, error);
+            this.reportError(error);
             return false;
         }
     }
@@ -180,27 +177,24 @@ export class WebrtcDataPeer {
         } catch (error) {
             cleanupErrors.push(error);
         }
-        for (const error of cleanupErrors) {
-            try {
-                this.onError(this, error);
-            } catch {
-                // Cleanup error reporting must not suppress the normalized close notification.
-            }
-        }
+        for (const error of cleanupErrors) this.reportError(error);
         this.onClose(this);
     }
 
     private attachPeerConnectionHandlers(): void {
         this.pc.addEventListener("connectionstatechange", () => {
             if (this.closed) return;
-            this.onDebug({ type: "rtc-connection-state", state: this.pc.connectionState });
+            this.reportDebug({ type: "rtc-connection-state", state: this.pc.connectionState });
             if (this.pc.connectionState === "failed" || this.pc.connectionState === "closed") {
                 this.destroy();
             }
         });
         this.pc.addEventListener("iceconnectionstatechange", () => {
             if (this.closed) return;
-            this.onDebug({ type: "rtc-ice-connection-state", state: this.pc.iceConnectionState });
+            this.reportDebug({
+                type: "rtc-ice-connection-state",
+                state: this.pc.iceConnectionState,
+            });
             if (
                 this.pc.iceConnectionState === "failed" ||
                 this.pc.iceConnectionState === "closed"
@@ -225,7 +219,7 @@ export class WebrtcDataPeer {
             if (event.data instanceof ArrayBuffer) {
                 this.onMessage(this, event.data);
             } else {
-                this.onError(this, new Error("Expected an ArrayBuffer data channel message"));
+                this.reportError(new Error("Expected an ArrayBuffer data channel message"));
             }
         });
         channel.addEventListener("close", () => {
@@ -233,7 +227,7 @@ export class WebrtcDataPeer {
         });
         channel.addEventListener("error", (event) => {
             if (!this.closed && this.channel === channel) {
-                this.onError(this, (event as RTCErrorEvent).error ?? event);
+                this.reportError((event as RTCErrorEvent).error ?? event);
             }
         });
     }
@@ -259,12 +253,39 @@ export class WebrtcDataPeer {
         });
     }
 
+    private reportError(error: unknown): void {
+        try {
+            this.onError(this, error);
+        } catch {
+            // Error callbacks are diagnostic and must not alter transport control flow.
+        }
+    }
+
+    private reportDebug(event: Record<string, unknown>): void {
+        try {
+            this.onDebug(event);
+        } catch {
+            // Debug callbacks are diagnostic and must not alter transport control flow.
+        }
+    }
+
     private ensureOpen(): void {
         if (this.closed) throw closedPeerError();
     }
 }
 
 const closedPeerError = (): Error => new Error("WebRTC data peer is closed");
+
+const validateChannelOptions = (
+    options: Omit<RTCDataChannelInit, "negotiated" | "id"> | undefined,
+): void => {
+    if (!options) return;
+    const runtimeOptions = options as RTCDataChannelInit;
+    if (runtimeOptions.negotiated === true) {
+        throw new TypeError("channelOptions.negotiated is unsupported");
+    }
+    if ("id" in runtimeOptions) throw new TypeError("channelOptions.id is unsupported");
+};
 
 const validateLimit = (name: string, value: number): number => {
     if (typeof value !== "number") throw new TypeError(`${name} must be a number`);

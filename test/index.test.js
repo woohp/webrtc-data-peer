@@ -257,6 +257,46 @@ test("owned channel callbacks are ignored after destroy", () => {
     assert.deepEqual(events.errors, []);
 });
 
+test("rejects unsupported out-of-band channel options", () => {
+    assert.throws(
+        () => createPeer({ channelOptions: { negotiated: true } }),
+        /channelOptions\.negotiated is unsupported/,
+    );
+    assert.throws(
+        () => createPeer({ channelOptions: { id: 7 } }),
+        /channelOptions\.id is unsupported/,
+    );
+});
+
+test("send remains boolean when the error callback throws", () => {
+    const { peer } = createPeer({
+        fallbackMaxMessageSize: 1,
+        onError: () => {
+            throw new Error("callback failed");
+        },
+    });
+    peer.channel.readyState = "open";
+
+    assert.equal(peer.send(new Uint8Array(2)), false);
+    peer.fallbackMaxMessageSize = Number.POSITIVE_INFINITY;
+    peer.channel.sendError = new Error("send failed");
+    assert.equal(peer.send(new Uint8Array(1)), false);
+    peer.destroy();
+});
+
+test("throwing debug callbacks cannot prevent failed-state teardown", () => {
+    const { peer, events } = createPeer({
+        onDebug: () => {
+            throw new Error("debug failed");
+        },
+    });
+
+    peer.pc.connectionState = "failed";
+    peer.pc.dispatch("connectionstatechange");
+
+    assert.equal(peer.closed, true);
+    assert.equal(events.closes, 1);
+});
 test("validates numeric send limits", () => {
     for (const [option, value, ErrorType] of [
         ["fallbackMaxMessageSize", Number.NaN, RangeError],
