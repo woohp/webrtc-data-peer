@@ -25,12 +25,14 @@
         "lint": "oxlint .",
         "typecheck": "tsgo -p tsconfig.json --noEmit",
         "check": "npm run lint && npm run typecheck && npm test",
-        "test": "npm run build && node --test"
+        "test": "npm run build && node --test",
+        "test:browser": "npm run build && node --test browser-test"
     },
     "devDependencies": {
         "@typescript/native-preview": "^7.0.0-dev.20260525.1",
         "oxfmt": "^0.52.0",
         "oxlint": "^1.67.0",
+        "playwright": "^1.61.1",
         "typescript": "^6.0.3"
     }
 }
