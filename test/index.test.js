@@ -4,8 +4,10 @@ import test from "node:test";
 class FakeDataChannel {
     binaryType = "blob";
     readyState = "connecting";
+    bufferedAmount = 0;
     listeners = new Map();
     sent = [];
+    sendError = null;
 
     addEventListener(type, listener) {
         this.listeners.set(type, listener);
@@ -14,6 +16,7 @@ class FakeDataChannel {
         this.listeners.get(type)?.(event);
     }
     send(data) {
+        if (this.sendError) throw this.sendError;
         this.sent.push(data);
     }
     close() {
@@ -26,6 +29,7 @@ class FakePeerConnection {
     connectionState = "new";
     iceConnectionState = "new";
     iceGatheringState = "complete";
+    sctp = null;
     localDescription = null;
     remoteDescription = null;
     listeners = new Map();
@@ -125,4 +129,32 @@ test("rejects non-binary messages", () => {
     peer.channel.dispatch("message", { data: "text" });
     assert.equal(events.errors.length, 1);
     peer.destroy();
+});
+test("enforces configured message and buffered-byte limits", () => {
+    const { peer, events } = createPeer({
+        fallbackMaxMessageSize: 2,
+        maxBufferedAmount: 4,
+    });
+    peer.channel.readyState = "open";
+
+    assert.equal(peer.send(new Uint8Array(3)), false);
+    assert.match(String(events.errors.at(-1)), /3 bytes.*2-byte limit/);
+
+    peer.pc.sctp = { maxMessageSize: 0 };
+    peer.channel.bufferedAmount = 3;
+    assert.equal(peer.send(new Uint8Array(2)), false);
+    assert.match(String(events.errors.at(-1)), /buffered data.*4-byte limit/);
+    peer.destroy();
+});
+
+test("reports data channel send exceptions", () => {
+    const { peer, events } = createPeer();
+    peer.channel.readyState = "open";
+    peer.channel.sendError = new Error("send failed");
+
+    assert.equal(peer.send(new Uint8Array([1])), false);
+    assert.equal(events.errors[0], peer.channel.sendError);
+    peer.destroy();
+    assert.equal(peer.connected, false);
+    assert.equal(peer.send(new Uint8Array([1])), false);
 });

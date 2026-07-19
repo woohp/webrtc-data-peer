@@ -4,6 +4,8 @@ export interface WebrtcDataPeerOptions {
     channelOptions?: RTCDataChannelInit;
     rtcConfig?: RTCConfiguration | undefined;
     iceGatheringTimeout?: number;
+    fallbackMaxMessageSize?: number;
+    maxBufferedAmount?: number;
     RTCPeerConnection?: typeof RTCPeerConnection;
     onOpen: (peer: WebrtcDataPeer) => void;
     onMessage: (peer: WebrtcDataPeer, data: ArrayBuffer) => void;
@@ -17,6 +19,8 @@ export class WebrtcDataPeer {
     readonly initiator: boolean;
     readonly channelLabel: string;
     readonly iceGatheringTimeout: number;
+    readonly fallbackMaxMessageSize: number;
+    readonly maxBufferedAmount: number;
     readonly onOpen: WebrtcDataPeerOptions["onOpen"];
     readonly onMessage: WebrtcDataPeerOptions["onMessage"];
     readonly onClose: WebrtcDataPeerOptions["onClose"];
@@ -29,6 +33,8 @@ export class WebrtcDataPeer {
         this.initiator = opts.initiator;
         this.channelLabel = opts.channelLabel;
         this.iceGatheringTimeout = opts.iceGatheringTimeout ?? 5000;
+        this.fallbackMaxMessageSize = opts.fallbackMaxMessageSize ?? Number.POSITIVE_INFINITY;
+        this.maxBufferedAmount = opts.maxBufferedAmount ?? Number.POSITIVE_INFINITY;
         this.onOpen = opts.onOpen;
         this.onMessage = opts.onMessage;
         this.onClose = opts.onClose;
@@ -52,7 +58,7 @@ export class WebrtcDataPeer {
     }
 
     get connected(): boolean {
-        return this.channel?.readyState === "open";
+        return !this.closed && this.channel?.readyState === "open";
     }
 
     async createOffer(): Promise<RTCSessionDescriptionInit> {
@@ -73,7 +79,30 @@ export class WebrtcDataPeer {
     }
 
     send(data: Uint8Array<ArrayBuffer>): boolean {
-        if (!this.channel || this.channel.readyState !== "open") return false;
+        if (this.closed || !this.channel || this.channel.readyState !== "open") return false;
+        const negotiatedMax = this.pc.sctp?.maxMessageSize;
+        const maxMessageSize =
+            negotiatedMax === 0
+                ? Number.POSITIVE_INFINITY
+                : (negotiatedMax ?? this.fallbackMaxMessageSize);
+        if (data.byteLength > maxMessageSize) {
+            this.onError(
+                this,
+                new Error(
+                    `WebRTC message is ${data.byteLength} bytes, exceeding the ${maxMessageSize}-byte limit`,
+                ),
+            );
+            return false;
+        }
+        if (this.channel.bufferedAmount + data.byteLength > this.maxBufferedAmount) {
+            this.onError(
+                this,
+                new Error(
+                    `WebRTC buffered data would exceed the ${this.maxBufferedAmount}-byte limit`,
+                ),
+            );
+            return false;
+        }
         try {
             this.channel.send(data);
             return true;
