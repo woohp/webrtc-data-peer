@@ -18,7 +18,7 @@
         }
     },
     "scripts": {
-        "build": "tsgo -p tsconfig.json",
+        "build": "rm -rf dist && tsgo -p tsconfig.json",
         "prepare": "npm run build",
         "format": "oxfmt --write .",
         "lint": "oxlint .",
