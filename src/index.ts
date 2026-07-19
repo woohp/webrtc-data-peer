@@ -28,6 +28,7 @@ export class WebrtcDataPeer {
     readonly onDebug: NonNullable<WebrtcDataPeerOptions["onDebug"]>;
     channel: RTCDataChannel | null = null;
     closed = false;
+    private readonly iceWaits = new Set<(error?: Error) => void>();
 
     constructor(opts: WebrtcDataPeerOptions) {
         this.initiator = opts.initiator;
@@ -101,20 +102,33 @@ export class WebrtcDataPeer {
     }
 
     async createOffer(): Promise<RTCSessionDescriptionInit> {
-        await this.pc.setLocalDescription(await this.pc.createOffer());
+        this.ensureOpen();
+        const offer = await this.pc.createOffer();
+        this.ensureOpen();
+        await this.pc.setLocalDescription(offer);
+        this.ensureOpen();
         await this.waitForIceGatheringComplete();
+        this.ensureOpen();
         return descriptionToJSON(this.pc.localDescription);
     }
 
     async acceptOffer(offer: RTCSessionDescriptionInit): Promise<RTCSessionDescriptionInit> {
+        this.ensureOpen();
         await this.pc.setRemoteDescription(offer);
-        await this.pc.setLocalDescription(await this.pc.createAnswer());
+        this.ensureOpen();
+        const answer = await this.pc.createAnswer();
+        this.ensureOpen();
+        await this.pc.setLocalDescription(answer);
+        this.ensureOpen();
         await this.waitForIceGatheringComplete();
+        this.ensureOpen();
         return descriptionToJSON(this.pc.localDescription);
     }
 
     async acceptAnswer(answer: RTCSessionDescriptionInit): Promise<void> {
+        this.ensureOpen();
         await this.pc.setRemoteDescription(answer);
+        this.ensureOpen();
     }
 
     send(data: Uint8Array<ArrayBuffer>): boolean {
@@ -154,8 +168,25 @@ export class WebrtcDataPeer {
     destroy(): void {
         if (this.closed) return;
         this.closed = true;
-        this.channel?.close();
-        this.pc.close();
+        const cleanupErrors: unknown[] = [];
+        for (const cancel of this.iceWaits) cancel(closedPeerError());
+        try {
+            this.channel?.close();
+        } catch (error) {
+            cleanupErrors.push(error);
+        }
+        try {
+            this.pc.close();
+        } catch (error) {
+            cleanupErrors.push(error);
+        }
+        for (const error of cleanupErrors) {
+            try {
+                this.onError(this, error);
+            } catch {
+                // Cleanup error reporting must not suppress the normalized close notification.
+            }
+        }
         this.onClose(this);
     }
 
@@ -201,31 +232,39 @@ export class WebrtcDataPeer {
             if (!this.closed && this.channel === channel) this.destroy();
         });
         channel.addEventListener("error", (event) => {
-            if (!this.closed && this.channel === channel) this.onError(this, event);
+            if (!this.closed && this.channel === channel) {
+                this.onError(this, (event as RTCErrorEvent).error ?? event);
+            }
         });
     }
 
     private waitForIceGatheringComplete(): Promise<void> {
+        this.ensureOpen();
         if (this.pc.iceGatheringState === "complete") return Promise.resolve();
 
-        return new Promise((resolve) => {
-            const timeout = setTimeout(done, this.iceGatheringTimeout);
-            const pc = this.pc;
-
-            function done() {
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => done(), this.iceGatheringTimeout);
+            const done = (error?: Error): void => {
                 clearTimeout(timeout);
-                pc.removeEventListener("icegatheringstatechange", onStateChange);
-                resolve();
-            }
-
-            function onStateChange() {
-                if (pc.iceGatheringState === "complete") done();
-            }
-
-            pc.addEventListener("icegatheringstatechange", onStateChange);
+                this.pc.removeEventListener("icegatheringstatechange", onStateChange);
+                this.iceWaits.delete(done);
+                if (error) reject(error);
+                else resolve();
+            };
+            const onStateChange = (): void => {
+                if (this.pc.iceGatheringState === "complete") done();
+            };
+            this.iceWaits.add(done);
+            this.pc.addEventListener("icegatheringstatechange", onStateChange);
         });
     }
+
+    private ensureOpen(): void {
+        if (this.closed) throw closedPeerError();
+    }
 }
+
+const closedPeerError = (): Error => new Error("WebRTC data peer is closed");
 
 const validateLimit = (name: string, value: number): number => {
     if (typeof value !== "number") throw new TypeError(`${name} must be a number`);

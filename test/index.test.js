@@ -272,6 +272,65 @@ test("validates numeric send limits", () => {
     peer.destroy();
 });
 
+test("destroy cancels active ICE waits", async (context) => {
+    context.mock.timers.enable({ apis: ["setTimeout"] });
+    const { peer, events } = createPeer({ iceGatheringTimeout: 1000 });
+    peer.pc.iceGatheringState = "gathering";
+    const creatingOffer = peer.createOffer();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    peer.destroy();
+
+    await assert.rejects(creatingOffer, /WebRTC data peer is closed/);
+    assert.equal(peer.iceWaits.size, 0);
+    assert.deepEqual(peer.pc.listeners.get("icegatheringstatechange"), []);
+    assert.equal(events.closes, 1);
+});
+
+test("negotiation cannot complete after destroy", async () => {
+    let resolveOffer;
+    class DeferredOfferPeerConnection extends FakePeerConnection {
+        createOffer() {
+            return new Promise((resolve) => (resolveOffer = resolve));
+        }
+    }
+    const { peer } = createPeer({ RTCPeerConnection: DeferredOfferPeerConnection });
+    const creatingOffer = peer.createOffer();
+    peer.destroy();
+    resolveOffer({ type: "offer", sdp: "late" });
+
+    await assert.rejects(creatingOffer, /WebRTC data peer is closed/);
+});
+
+test("throwing cleanup still closes once and reports each error", () => {
+    const { peer, events } = createPeer();
+    peer.channel.close = () => {
+        throw new Error("channel close failed");
+    };
+    peer.pc.close = () => {
+        throw new Error("peer connection close failed");
+    };
+
+    peer.destroy();
+    peer.destroy();
+
+    assert.equal(events.closes, 1);
+    assert.deepEqual(events.errors.map(String), [
+        "Error: channel close failed",
+        "Error: peer connection close failed",
+    ]);
+});
+
+test("data channel errors expose the underlying RTC error", () => {
+    const { peer, events } = createPeer();
+    const error = new Error("RTC failure");
+
+    peer.channel.dispatch("error", { error });
+
+    assert.equal(events.errors[0], error);
+    peer.destroy();
+});
 test("waits for ICE completion and closes on failed connection state", async () => {
     const { peer, events } = createPeer();
     peer.pc.iceGatheringState = "gathering";
