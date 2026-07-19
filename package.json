@@ -6,6 +6,7 @@
     "author": "",
     "files": [
         "dist",
+        "src",
         "README.md"
     ],
     "type": "module",

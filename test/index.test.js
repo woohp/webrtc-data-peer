@@ -176,6 +176,40 @@ test("reports data channel send exceptions", () => {
     assert.equal(peer.connected, false);
     assert.equal(peer.send(new Uint8Array([1])), false);
 });
+
+test("initiator rejects every remotely created data channel", () => {
+    const { peer, events } = createPeer();
+    const owned = peer.channel;
+    const remote = new FakeDataChannel();
+    remote.label = "test-channel";
+
+    peer.pc.dispatch("datachannel", { channel: remote });
+
+    assert.equal(remote.readyState, "closed");
+    assert.equal(peer.channel, owned);
+    assert.match(String(events.errors[0]), /Initiator received an unexpected/);
+    peer.destroy();
+});
+
+test("closes the peer connection when channel creation throws", () => {
+    class ThrowingChannelPeerConnection extends FakePeerConnection {
+        static latest;
+        constructor(config) {
+            super(config);
+            ThrowingChannelPeerConnection.latest = this;
+        }
+        createDataChannel() {
+            throw new Error("channel creation failed");
+        }
+    }
+
+    assert.throws(
+        () => createPeer({ RTCPeerConnection: ThrowingChannelPeerConnection }),
+        /channel creation failed/,
+    );
+    assert.equal(ThrowingChannelPeerConnection.latest.connectionState, "closed");
+    assert.equal(ThrowingChannelPeerConnection.latest.iceConnectionState, "closed");
+});
 test("responder owns only the first matching data channel", () => {
     const { peer, events } = createPeer({ initiator: false });
     const mismatched = new FakeDataChannel();

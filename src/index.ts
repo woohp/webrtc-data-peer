@@ -49,20 +49,18 @@ export class WebrtcDataPeer {
         const PeerConnection = opts.RTCPeerConnection ?? globalThis.RTCPeerConnection;
         if (!PeerConnection) throw new Error("RTCPeerConnection is not available");
         this.pc = new PeerConnection(opts.rtcConfig);
-        this.attachPeerConnectionHandlers();
-
-        if (this.initiator) {
-            this.attachChannel(
-                this.pc.createDataChannel(this.channelLabel, {
-                    ordered: true,
-                    ...opts.channelOptions,
-                }),
-            );
-        } else {
+        try {
+            this.attachPeerConnectionHandlers();
             this.pc.addEventListener("datachannel", (event) => {
                 const channel = event.channel;
                 if (this.closed) {
                     channel.close();
+                } else if (this.initiator) {
+                    channel.close();
+                    this.onError(
+                        this,
+                        new Error("Initiator received an unexpected remote data channel"),
+                    );
                 } else if (channel.label !== this.channelLabel) {
                     channel.close();
                     this.onError(
@@ -78,6 +76,23 @@ export class WebrtcDataPeer {
                     this.attachChannel(channel);
                 }
             });
+
+            if (this.initiator) {
+                this.attachChannel(
+                    this.pc.createDataChannel(this.channelLabel, {
+                        ordered: true,
+                        ...opts.channelOptions,
+                    }),
+                );
+            }
+        } catch (error) {
+            this.closed = true;
+            try {
+                this.pc.close();
+            } catch {
+                // Preserve the initialization error if closing the partial connection also fails.
+            }
+            throw error;
         }
     }
 
