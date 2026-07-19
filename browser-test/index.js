@@ -63,11 +63,12 @@ test("negotiates a real channel, sends binary data, and closes", { timeout: 30_0
             await withTimeout(Promise.all([initiatorOpen, responderOpen]), "channel open");
             const sent = initiator.send(new Uint8Array([1, 2, 3, 255]));
             const received = await withTimeout(message, "binary message");
+            const errorsBeforeClose = [...errors];
             initiator.destroy();
             await withTimeout(responderClose, "remote close");
             responder.destroy();
 
-            return { sent, received, initiatorCloses, responderCloses, errors };
+            return { sent, received, initiatorCloses, responderCloses, errorsBeforeClose };
         }, source);
 
         assert.deepEqual(result, {
@@ -75,7 +76,7 @@ test("negotiates a real channel, sends binary data, and closes", { timeout: 30_0
             received: [1, 2, 3, 255],
             initiatorCloses: 1,
             responderCloses: 1,
-            errors: [],
+            errorsBeforeClose: [],
         });
     } finally {
         await browser.close();
