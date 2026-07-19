@@ -253,6 +253,13 @@ test("waits for ICE completion and closes on failed connection state", async () 
     assert.equal(events.closes, 1);
 });
 
+test("closes on failed ICE connection state", () => {
+    const { peer, events } = createPeer();
+    peer.pc.iceConnectionState = "failed";
+    peer.pc.dispatch("iceconnectionstatechange");
+
+    assert.equal(events.closes, 1);
+});
 test("ICE gathering timeout returns the current description", async (context) => {
     context.mock.timers.enable({ apis: ["setTimeout"] });
     const { peer } = createPeer({ iceGatheringTimeout: 100 });
