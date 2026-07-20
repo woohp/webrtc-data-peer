@@ -242,6 +242,19 @@ test("responder owns only the first matching data channel", () => {
     assert.equal(events.errors.length, 2);
 });
 
+test("lifecycle state is exposed read-only", () => {
+    const { peer } = createPeer();
+    const channel = peer.channel;
+
+    assert.throws(() => (peer.closed = true), TypeError);
+    assert.throws(() => (peer.channel = null), TypeError);
+    assert.equal(peer.closed, false);
+    assert.equal(peer.channel, channel);
+
+    peer.destroy();
+    assert.equal(peer.closed, true);
+});
+
 test("owned channel callbacks are ignored after destroy", () => {
     const { peer, events } = createPeer();
     const channel = peer.channel;

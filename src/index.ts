@@ -28,8 +28,8 @@ export class WebrtcDataPeer {
     readonly onClose: WebrtcDataPeerOptions["onClose"];
     readonly onError: WebrtcDataPeerOptions["onError"];
     readonly onDebug: NonNullable<WebrtcDataPeerOptions["onDebug"]>;
-    channel: RTCDataChannel | null = null;
-    closed = false;
+    private _channel: RTCDataChannel | null = null;
+    private _closed = false;
     private readonly iceWaits = new Set<(error?: Error) => void>();
 
     constructor(opts: WebrtcDataPeerOptions) {
@@ -60,7 +60,7 @@ export class WebrtcDataPeer {
             this.attachPeerConnectionHandlers();
             this.pc.addEventListener("datachannel", (event) => {
                 const channel = event.channel;
-                if (this.closed) {
+                if (this._closed) {
                     channel.close();
                 } else if (this.initiator) {
                     channel.close();
@@ -74,7 +74,7 @@ export class WebrtcDataPeer {
                             `Expected data channel label ${JSON.stringify(this.channelLabel)}, received ${JSON.stringify(channel.label)}`,
                         ),
                     );
-                } else if (this.channel) {
+                } else if (this._channel) {
                     channel.close();
                     this.reportError(new Error("Received an unexpected additional data channel"));
                 } else {
@@ -91,7 +91,7 @@ export class WebrtcDataPeer {
                 );
             }
         } catch (error) {
-            this.closed = true;
+            this._closed = true;
             try {
                 this.pc.close();
             } catch {
@@ -101,8 +101,16 @@ export class WebrtcDataPeer {
         }
     }
 
+    get channel(): RTCDataChannel | null {
+        return this._channel;
+    }
+
+    get closed(): boolean {
+        return this._closed;
+    }
+
     get connected(): boolean {
-        return !this.closed && this.channel?.readyState === "open";
+        return !this._closed && this._channel?.readyState === "open";
     }
 
     async createOffer(): Promise<RTCSessionDescriptionInit> {
@@ -136,7 +144,7 @@ export class WebrtcDataPeer {
     }
 
     send(data: Uint8Array<ArrayBuffer>): boolean {
-        if (this.closed || !this.channel || this.channel.readyState !== "open") return false;
+        if (this._closed || !this._channel || this._channel.readyState !== "open") return false;
         const negotiatedMax = this.pc.sctp?.maxMessageSize;
         const maxMessageSize =
             negotiatedMax === 0
@@ -150,7 +158,7 @@ export class WebrtcDataPeer {
             );
             return false;
         }
-        if (this.channel.bufferedAmount + data.byteLength > this.maxBufferedAmount) {
+        if (this._channel.bufferedAmount + data.byteLength > this.maxBufferedAmount) {
             this.reportError(
                 new Error(
                     `WebRTC buffered data would exceed the ${this.maxBufferedAmount}-byte limit`,
@@ -159,7 +167,7 @@ export class WebrtcDataPeer {
             return false;
         }
         try {
-            this.channel.send(data);
+            this._channel.send(data);
             return true;
         } catch (error) {
             this.reportError(error);
@@ -168,12 +176,12 @@ export class WebrtcDataPeer {
     }
 
     destroy(): void {
-        if (this.closed) return;
-        this.closed = true;
+        if (this._closed) return;
+        this._closed = true;
         const cleanupErrors: unknown[] = [];
         for (const cancel of this.iceWaits) cancel(closedPeerError());
         try {
-            this.channel?.close();
+            this._channel?.close();
         } catch (error) {
             cleanupErrors.push(error);
         }
@@ -188,14 +196,14 @@ export class WebrtcDataPeer {
 
     private attachPeerConnectionHandlers(): void {
         this.pc.addEventListener("connectionstatechange", () => {
-            if (this.closed) return;
+            if (this._closed) return;
             this.reportDebug({ type: "rtc-connection-state", state: this.pc.connectionState });
             if (this.pc.connectionState === "failed" || this.pc.connectionState === "closed") {
                 this.destroy();
             }
         });
         this.pc.addEventListener("iceconnectionstatechange", () => {
-            if (this.closed) return;
+            if (this._closed) return;
             this.reportDebug({
                 type: "rtc-ice-connection-state",
                 state: this.pc.iceConnectionState,
@@ -210,17 +218,17 @@ export class WebrtcDataPeer {
     }
 
     private attachChannel(channel: RTCDataChannel): void {
-        if (this.closed || this.channel) {
+        if (this._closed || this._channel) {
             channel.close();
             return;
         }
-        this.channel = channel;
+        this._channel = channel;
         channel.binaryType = "arraybuffer";
         channel.addEventListener("open", () => {
-            if (!this.closed && this.channel === channel) this.onOpen(this);
+            if (!this._closed && this._channel === channel) this.onOpen(this);
         });
         channel.addEventListener("message", (event) => {
-            if (this.closed || this.channel !== channel) return;
+            if (this._closed || this._channel !== channel) return;
             if (event.data instanceof ArrayBuffer) {
                 this.onMessage(this, event.data);
             } else {
@@ -228,10 +236,10 @@ export class WebrtcDataPeer {
             }
         });
         channel.addEventListener("close", () => {
-            if (!this.closed && this.channel === channel) this.destroy();
+            if (!this._closed && this._channel === channel) this.destroy();
         });
         channel.addEventListener("error", (event) => {
-            if (!this.closed && this.channel === channel) {
+            if (!this._closed && this._channel === channel) {
                 this.reportError((event as RTCErrorEvent).error ?? event);
             }
         });
@@ -275,7 +283,7 @@ export class WebrtcDataPeer {
     }
 
     private ensureOpen(): void {
-        if (this.closed) throw closedPeerError();
+        if (this._closed) throw closedPeerError();
     }
 }
 
