@@ -1,3 +1,5 @@
+const maximumTimerDelay = 2_147_483_647;
+
 export interface WebrtcDataPeerOptions {
     initiator: boolean;
     channelLabel: string;
@@ -292,8 +294,8 @@ const validateChannelOptions = (
 
 const validateTimeout = (name: string, value: number): number => {
     if (typeof value !== "number") throw new TypeError(`${name} must be a number`);
-    if (!Number.isFinite(value) || value < 0) {
-        throw new RangeError(`${name} must be finite and non-negative`);
+    if (!Number.isFinite(value) || value < 0 || value > maximumTimerDelay) {
+        throw new RangeError(`${name} must be between 0 and ${maximumTimerDelay}`);
     }
     return value;
 };

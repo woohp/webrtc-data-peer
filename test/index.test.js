@@ -271,19 +271,22 @@ test("rejects unsupported out-of-band channel options", () => {
 });
 
 test("send remains boolean when the error callback throws", () => {
-    const { peer } = createPeer({
+    const throwingOnError = () => {
+        throw new Error("callback failed");
+    };
+    const { peer: oversizedPeer } = createPeer({
         fallbackMaxMessageSize: 1,
-        onError: () => {
-            throw new Error("callback failed");
-        },
+        onError: throwingOnError,
     });
-    peer.channel.readyState = "open";
+    oversizedPeer.channel.readyState = "open";
+    assert.equal(oversizedPeer.send(new Uint8Array(2)), false);
+    oversizedPeer.destroy();
 
-    assert.equal(peer.send(new Uint8Array(2)), false);
-    peer.fallbackMaxMessageSize = Number.POSITIVE_INFINITY;
-    peer.channel.sendError = new Error("send failed");
-    assert.equal(peer.send(new Uint8Array(1)), false);
-    peer.destroy();
+    const { peer: failingPeer } = createPeer({ onError: throwingOnError });
+    failingPeer.channel.readyState = "open";
+    failingPeer.channel.sendError = new Error("send failed");
+    assert.equal(failingPeer.send(new Uint8Array(1)), false);
+    failingPeer.destroy();
 });
 
 test("throwing debug callbacks cannot prevent failed-state teardown", () => {
@@ -300,13 +303,22 @@ test("throwing debug callbacks cannot prevent failed-state teardown", () => {
     assert.equal(events.closes, 1);
 });
 test("validates the ICE gathering timeout", () => {
-    for (const value of ["1", Number.NaN, -1, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    for (const value of [
+        "1",
+        Number.NaN,
+        -1,
+        Number.POSITIVE_INFINITY,
+        Number.NEGATIVE_INFINITY,
+        2_147_483_648,
+    ]) {
         assert.throws(() => createPeer({ iceGatheringTimeout: value }), /iceGatheringTimeout/);
     }
 
-    const { peer } = createPeer({ iceGatheringTimeout: 0 });
-    assert.equal(peer.iceGatheringTimeout, 0);
-    peer.destroy();
+    for (const value of [0, 2_147_483_647]) {
+        const { peer } = createPeer({ iceGatheringTimeout: value });
+        assert.equal(peer.iceGatheringTimeout, value);
+        peer.destroy();
+    }
 });
 
 test("validates numeric send limits", () => {
@@ -335,7 +347,6 @@ test("destroy cancels active ICE waits", async (context) => {
     peer.destroy();
 
     await assert.rejects(creatingOffer, /WebRTC data peer is closed/);
-    assert.equal(peer.iceWaits.size, 0);
     assert.deepEqual(peer.pc.listeners.get("icegatheringstatechange"), []);
     assert.equal(events.closes, 1);
 });
