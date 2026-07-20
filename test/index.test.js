@@ -258,10 +258,12 @@ test("owned channel callbacks are ignored after destroy", () => {
 });
 
 test("rejects unsupported out-of-band channel options", () => {
-    assert.throws(
-        () => createPeer({ channelOptions: { negotiated: true } }),
-        /channelOptions\.negotiated is unsupported/,
-    );
+    for (const negotiated of [true, false]) {
+        assert.throws(
+            () => createPeer({ channelOptions: { negotiated } }),
+            /channelOptions\.negotiated is unsupported/,
+        );
+    }
     assert.throws(
         () => createPeer({ channelOptions: { id: 7 } }),
         /channelOptions\.id is unsupported/,
@@ -297,6 +299,16 @@ test("throwing debug callbacks cannot prevent failed-state teardown", () => {
     assert.equal(peer.closed, true);
     assert.equal(events.closes, 1);
 });
+test("validates the ICE gathering timeout", () => {
+    for (const value of ["1", Number.NaN, -1, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+        assert.throws(() => createPeer({ iceGatheringTimeout: value }), /iceGatheringTimeout/);
+    }
+
+    const { peer } = createPeer({ iceGatheringTimeout: 0 });
+    assert.equal(peer.iceGatheringTimeout, 0);
+    peer.destroy();
+});
+
 test("validates numeric send limits", () => {
     for (const [option, value, ErrorType] of [
         ["fallbackMaxMessageSize", Number.NaN, RangeError],

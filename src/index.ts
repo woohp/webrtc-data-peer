@@ -33,7 +33,10 @@ export class WebrtcDataPeer {
     constructor(opts: WebrtcDataPeerOptions) {
         this.initiator = opts.initiator;
         this.channelLabel = opts.channelLabel;
-        this.iceGatheringTimeout = opts.iceGatheringTimeout ?? 5000;
+        this.iceGatheringTimeout = validateTimeout(
+            "iceGatheringTimeout",
+            opts.iceGatheringTimeout ?? 5000,
+        );
         this.fallbackMaxMessageSize = validateLimit(
             "fallbackMaxMessageSize",
             opts.fallbackMaxMessageSize ?? Number.POSITIVE_INFINITY,
@@ -281,10 +284,18 @@ const validateChannelOptions = (
 ): void => {
     if (!options) return;
     const runtimeOptions = options as RTCDataChannelInit;
-    if (runtimeOptions.negotiated === true) {
+    if ("negotiated" in runtimeOptions) {
         throw new TypeError("channelOptions.negotiated is unsupported");
     }
     if ("id" in runtimeOptions) throw new TypeError("channelOptions.id is unsupported");
+};
+
+const validateTimeout = (name: string, value: number): number => {
+    if (typeof value !== "number") throw new TypeError(`${name} must be a number`);
+    if (!Number.isFinite(value) || value < 0) {
+        throw new RangeError(`${name} must be finite and non-negative`);
+    }
+    return value;
 };
 
 const validateLimit = (name: string, value: number): number => {
