@@ -7,7 +7,7 @@
 - `pc` is public so consumers can observe connection state, stats, and SCTP details. Do not add callbacks that mirror `RTCPeerConnection` events.
 - Preserve injectable `RTCPeerConnection`, idempotent close notification, boolean `send()`, and rejection of pending negotiation on `destroy()`. Native negotiation operations already in flight may remain pending after close, so each step races destruction.
 - Keep explicit `createOffer()`/`createAnswer()`: `@roamhq/wrtc` 0.10.0 rejects implicit and type-only `setLocalDescription()`.
-- `onError` is diagnostic: swallow its exceptions. Exceptions from other callbacks propagate.
+- `onError` is diagnostic: swallow its exceptions. Exceptions from other callbacks propagate. Firefox reports a normal remote close as `User-Initiated Abort` with a null `sctpCauseCode`; it is documented, not filtered.
 - Keep `_closed` guards in event listeners. Chromium delivers queued messages after close, and consumer listeners on the public `pc`/`channel` can call `destroy()` mid-dispatch.
 - Do not guard against what browsers already guarantee: `close()` does not throw, and `connectionState` reflects ICE failure (Firefox 113+).
 - Pass explicit test filenames to `node --test`; a directory argument can pass with zero tests.

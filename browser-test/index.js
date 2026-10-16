@@ -71,7 +71,6 @@ test(
                 await withTimeout(Promise.all([initiatorOpen, responderOpen]), "channel open");
                 const sent = initiator.send(new Uint8Array([1, 2, 3, 255]));
                 const received = await withTimeout(message, "binary message");
-                const responderErrorsBeforeClose = [...responderErrors];
                 initiator.destroy();
                 await withTimeout(responderClose, "remote close");
                 responder.destroy();
@@ -82,18 +81,20 @@ test(
                     initiatorCloses,
                     responderCloses,
                     initiatorErrors,
-                    responderErrorsBeforeClose,
+                    responderErrors,
                 };
             }, source);
 
-            assert.deepEqual(result, {
+            const { responderErrors, ...rest } = result;
+            assert.deepEqual(rest, {
                 sent: true,
                 received: [1, 2, 3, 255],
                 initiatorCloses: 1,
                 responderCloses: 1,
                 initiatorErrors: [],
-                responderErrorsBeforeClose: [],
             });
+            // Firefox reports the remote peer's normal close as an SCTP abort; Chromium reports nothing.
+            for (const error of responderErrors) assert.match(error, /User-Initiated Abort/);
         } finally {
             await browser.close();
         }
