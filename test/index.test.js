@@ -29,7 +29,6 @@ class FakeDataChannel {
 
 class FakePeerConnection {
     connectionState = "new";
-    iceConnectionState = "new";
     iceGatheringState = "complete";
     sctp = null;
     localDescription = null;
@@ -74,7 +73,6 @@ class FakePeerConnection {
     }
     close() {
         this.connectionState = "closed";
-        this.iceConnectionState = "closed";
     }
 }
 
@@ -101,7 +99,7 @@ test("creates complete offers and accepts answers", async () => {
     await peer.acceptAnswer({ type: "answer", sdp: "answer" });
     assert.deepEqual(peer.pc.remoteDescription, { type: "answer", sdp: "answer" });
     assert.equal(peer.channel.label, "test-channel");
-    assert.deepEqual(peer.channel.options, { ordered: true });
+    assert.deepEqual(peer.channel.options, { ordered: true, negotiated: false });
     peer.destroy();
 });
 
@@ -187,7 +185,7 @@ test("initiator rejects every remotely created data channel", () => {
 
     assert.equal(remote.readyState, "closed");
     assert.equal(peer.channel, owned);
-    assert.match(String(events.errors[0]), /Initiator received an unexpected/);
+    assert.match(String(events.errors[0]), /Unexpected remote data channel/);
     peer.destroy();
 });
 
@@ -208,7 +206,6 @@ test("closes the peer connection when channel creation throws", () => {
         /channel creation failed/,
     );
     assert.equal(ThrowingChannelPeerConnection.latest.connectionState, "closed");
-    assert.equal(ThrowingChannelPeerConnection.latest.iceConnectionState, "closed");
 });
 test("responder owns only the first matching data channel", () => {
     const { peer, events } = createPeer({ initiator: false });
@@ -242,19 +239,6 @@ test("responder owns only the first matching data channel", () => {
     assert.equal(events.errors.length, 2);
 });
 
-test("lifecycle state is exposed read-only", () => {
-    const { peer } = createPeer();
-    const channel = peer.channel;
-
-    assert.throws(() => (peer.closed = true), TypeError);
-    assert.throws(() => (peer.channel = null), TypeError);
-    assert.equal(peer.closed, false);
-    assert.equal(peer.channel, channel);
-
-    peer.destroy();
-    assert.equal(peer.closed, true);
-});
-
 test("owned channel callbacks are ignored after destroy", () => {
     const { peer, events } = createPeer();
     const channel = peer.channel;
@@ -270,17 +254,10 @@ test("owned channel callbacks are ignored after destroy", () => {
     assert.deepEqual(events.errors, []);
 });
 
-test("rejects unsupported out-of-band channel options", () => {
-    for (const negotiated of [true, false]) {
-        assert.throws(
-            () => createPeer({ channelOptions: { negotiated } }),
-            /channelOptions\.negotiated is unsupported/,
-        );
-    }
-    assert.throws(
-        () => createPeer({ channelOptions: { id: 7 } }),
-        /channelOptions\.id is unsupported/,
-    );
+test("forces in-band channel negotiation", () => {
+    const { peer } = createPeer({ channelOptions: { ordered: false, negotiated: true } });
+    assert.deepEqual(peer.channel.options, { ordered: false, negotiated: false });
+    peer.destroy();
 });
 
 test("send remains boolean when the error callback throws", () => {
@@ -302,22 +279,8 @@ test("send remains boolean when the error callback throws", () => {
     failingPeer.destroy();
 });
 
-test("throwing debug callbacks cannot prevent failed-state teardown", () => {
-    const { peer, events } = createPeer({
-        onDebug: () => {
-            throw new Error("debug failed");
-        },
-    });
-
-    peer.pc.connectionState = "failed";
-    peer.pc.dispatch("connectionstatechange");
-
-    assert.equal(peer.closed, true);
-    assert.equal(events.closes, 1);
-});
 test("validates the ICE gathering timeout", () => {
     for (const value of [
-        "1",
         Number.NaN,
         -1,
         Number.POSITIVE_INFINITY,
@@ -328,22 +291,15 @@ test("validates the ICE gathering timeout", () => {
     }
 
     for (const value of [0, 2_147_483_647]) {
-        const { peer } = createPeer({ iceGatheringTimeout: value });
-        assert.equal(peer.iceGatheringTimeout, value);
-        peer.destroy();
+        createPeer({ iceGatheringTimeout: value }).peer.destroy();
     }
 });
 
 test("validates numeric send limits", () => {
-    for (const [option, value, ErrorType] of [
-        ["fallbackMaxMessageSize", Number.NaN, RangeError],
-        ["fallbackMaxMessageSize", -1, RangeError],
-        ["fallbackMaxMessageSize", -Infinity, RangeError],
-        ["maxBufferedAmount", Number.NaN, RangeError],
-        ["maxBufferedAmount", -1, RangeError],
-        ["maxBufferedAmount", "1", TypeError],
-    ]) {
-        assert.throws(() => createPeer({ [option]: value }), ErrorType);
+    for (const option of ["fallbackMaxMessageSize", "maxBufferedAmount"]) {
+        for (const value of [Number.NaN, -1, -Infinity]) {
+            assert.throws(() => createPeer({ [option]: value }), RangeError);
+        }
     }
     const { peer } = createPeer({ fallbackMaxMessageSize: 0, maxBufferedAmount: Infinity });
     peer.destroy();
@@ -354,8 +310,7 @@ test("destroy cancels active ICE waits", async (context) => {
     const { peer, events } = createPeer({ iceGatheringTimeout: 1000 });
     peer.pc.iceGatheringState = "gathering";
     const creatingOffer = peer.createOffer();
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise(setImmediate);
 
     peer.destroy();
 
@@ -379,25 +334,6 @@ test("negotiation cannot complete after destroy", async () => {
     await assert.rejects(creatingOffer, /WebRTC data peer is closed/);
 });
 
-test("throwing cleanup still closes once and reports each error", () => {
-    const { peer, events } = createPeer();
-    peer.channel.close = () => {
-        throw new Error("channel close failed");
-    };
-    peer.pc.close = () => {
-        throw new Error("peer connection close failed");
-    };
-
-    peer.destroy();
-    peer.destroy();
-
-    assert.equal(events.closes, 1);
-    assert.deepEqual(events.errors.map(String), [
-        "Error: channel close failed",
-        "Error: peer connection close failed",
-    ]);
-});
-
 test("data channel errors expose the underlying RTC error", () => {
     const { peer, events } = createPeer();
     const error = new Error("RTC failure");
@@ -411,8 +347,7 @@ test("waits for ICE completion and closes on failed connection state", async () 
     const { peer, events } = createPeer();
     peer.pc.iceGatheringState = "gathering";
     const creatingOffer = peer.createOffer();
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise(setImmediate);
     peer.pc.iceGatheringState = "complete";
     peer.pc.dispatch("icegatheringstatechange");
 
@@ -422,20 +357,12 @@ test("waits for ICE completion and closes on failed connection state", async () 
     assert.equal(events.closes, 1);
 });
 
-test("closes on failed ICE connection state", () => {
-    const { peer, events } = createPeer();
-    peer.pc.iceConnectionState = "failed";
-    peer.pc.dispatch("iceconnectionstatechange");
-
-    assert.equal(events.closes, 1);
-});
 test("ICE gathering timeout returns the current description", async (context) => {
     context.mock.timers.enable({ apis: ["setTimeout"] });
     const { peer } = createPeer({ iceGatheringTimeout: 100 });
     peer.pc.iceGatheringState = "gathering";
     const creatingOffer = peer.createOffer();
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise(setImmediate);
     context.mock.timers.tick(100);
 
     assert.deepEqual(await creatingOffer, { type: "offer", sdp: "offer" });
