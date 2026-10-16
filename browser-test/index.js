@@ -32,7 +32,8 @@ test(
                             ),
                         ),
                     ]);
-                const errors = [];
+                const initiatorErrors = [];
+                const responderErrors = [];
                 let resolveInitiatorOpen;
                 let resolveResponderOpen;
                 let resolveMessage;
@@ -50,7 +51,7 @@ test(
                     onOpen: resolveInitiatorOpen,
                     onMessage: () => {},
                     onClose: () => initiatorCloses++,
-                    onError: (_peer, error) => errors.push(String(error)),
+                    onError: (_peer, error) => initiatorErrors.push(String(error)),
                 });
                 const responder = new WebrtcDataPeer({
                     initiator: false,
@@ -61,7 +62,7 @@ test(
                         responderCloses++;
                         resolveResponderClose();
                     },
-                    onError: (_peer, error) => errors.push(String(error)),
+                    onError: (_peer, error) => responderErrors.push(String(error)),
                 });
 
                 const offer = await initiator.createOffer();
@@ -70,12 +71,19 @@ test(
                 await withTimeout(Promise.all([initiatorOpen, responderOpen]), "channel open");
                 const sent = initiator.send(new Uint8Array([1, 2, 3, 255]));
                 const received = await withTimeout(message, "binary message");
-                const errorsBeforeClose = [...errors];
+                const responderErrorsBeforeClose = [...responderErrors];
                 initiator.destroy();
                 await withTimeout(responderClose, "remote close");
                 responder.destroy();
 
-                return { sent, received, initiatorCloses, responderCloses, errorsBeforeClose };
+                return {
+                    sent,
+                    received,
+                    initiatorCloses,
+                    responderCloses,
+                    initiatorErrors,
+                    responderErrorsBeforeClose,
+                };
             }, source);
 
             assert.deepEqual(result, {
@@ -83,7 +91,8 @@ test(
                 received: [1, 2, 3, 255],
                 initiatorCloses: 1,
                 responderCloses: 1,
-                errorsBeforeClose: [],
+                initiatorErrors: [],
+                responderErrorsBeforeClose: [],
             });
         } finally {
             await browser.close();

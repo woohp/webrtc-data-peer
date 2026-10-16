@@ -27,9 +27,14 @@ export class WebrtcDataPeer {
     private readonly onError: WebrtcDataPeerOptions["onError"];
     private _channel: RTCDataChannel | null = null;
     private _closed = false;
-    private readonly iceWaits = new Set<(error?: Error) => void>();
+    private readonly destroyed: Promise<never>;
+    private readonly rejectDestroyed: (error: Error) => void;
 
     constructor(opts: WebrtcDataPeerOptions) {
+        let rejectDestroyed!: (error: Error) => void;
+        this.destroyed = new Promise((_, reject) => (rejectDestroyed = reject));
+        this.destroyed.catch(() => {});
+        this.rejectDestroyed = rejectDestroyed;
         this.channelLabel = opts.channelLabel;
         this.iceGatheringTimeout = validateRange(
             "iceGatheringTimeout",
@@ -98,38 +103,28 @@ export class WebrtcDataPeer {
     }
 
     async createOffer(): Promise<RTCSessionDescriptionInit> {
-        this.ensureOpen();
-        const offer = await this.pc.createOffer();
-        this.ensureOpen();
-        await this.pc.setLocalDescription(offer);
-        this.ensureOpen();
-        await this.waitForIceGatheringComplete();
-        this.ensureOpen();
-        return descriptionToJSON(this.pc.localDescription);
+        const offer = await this.step(() => this.pc.createOffer());
+        await this.step(() => this.pc.setLocalDescription(offer));
+        await this.step(() => this.waitForIceGatheringComplete());
+        return this.localDescription();
     }
 
     async acceptOffer(offer: RTCSessionDescriptionInit): Promise<RTCSessionDescriptionInit> {
-        this.ensureOpen();
-        await this.pc.setRemoteDescription(offer);
-        this.ensureOpen();
-        const answer = await this.pc.createAnswer();
-        this.ensureOpen();
-        await this.pc.setLocalDescription(answer);
-        this.ensureOpen();
-        await this.waitForIceGatheringComplete();
-        this.ensureOpen();
-        return descriptionToJSON(this.pc.localDescription);
+        await this.step(() => this.pc.setRemoteDescription(offer));
+        const answer = await this.step(() => this.pc.createAnswer());
+        await this.step(() => this.pc.setLocalDescription(answer));
+        await this.step(() => this.waitForIceGatheringComplete());
+        return this.localDescription();
     }
 
     async acceptAnswer(answer: RTCSessionDescriptionInit): Promise<void> {
-        this.ensureOpen();
-        await this.pc.setRemoteDescription(answer);
+        await this.step(() => this.pc.setRemoteDescription(answer));
         this.ensureOpen();
     }
 
     send(data: Uint8Array<ArrayBuffer>): boolean {
         const channel = this._channel;
-        if (!channel || !this.connected) return false;
+        if (this._closed || channel?.readyState !== "open") return false;
         const negotiatedMax = this.pc.sctp?.maxMessageSize;
         const maxMessageSize =
             negotiatedMax === 0
@@ -163,7 +158,7 @@ export class WebrtcDataPeer {
     destroy(): void {
         if (this._closed) return;
         this._closed = true;
-        for (const cancel of this.iceWaits) cancel(closedPeerError());
+        this.rejectDestroyed(closedPeerError());
         this._channel?.close();
         this.pc.close();
         this.onClose(this);
@@ -183,32 +178,41 @@ export class WebrtcDataPeer {
                 this.reportError(new Error("Expected an ArrayBuffer data channel message"));
             }
         });
-        channel.addEventListener("close", () => {
-            if (!this._closed) this.destroy();
-        });
+        channel.addEventListener("close", () => this.destroy());
         channel.addEventListener("error", (event) => {
             if (!this._closed) this.reportError((event as RTCErrorEvent).error ?? event);
         });
     }
 
+    // Native operations can stay pending after close, so each one races destruction.
+    private step<T>(operation: () => Promise<T>): Promise<T> {
+        this.ensureOpen();
+        return Promise.race([this.destroyed, operation()]);
+    }
+
     private waitForIceGatheringComplete(): Promise<void> {
         if (this.pc.iceGatheringState === "complete") return Promise.resolve();
 
-        return new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => done(), this.iceGatheringTimeout);
-            const done = (error?: Error): void => {
+        return new Promise((resolve) => {
+            const done = (): void => {
                 clearTimeout(timeout);
                 this.pc.removeEventListener("icegatheringstatechange", onStateChange);
-                this.iceWaits.delete(done);
-                if (error) reject(error);
-                else resolve();
+                resolve();
             };
             const onStateChange = (): void => {
                 if (this.pc.iceGatheringState === "complete") done();
             };
-            this.iceWaits.add(done);
+            const timeout = setTimeout(done, this.iceGatheringTimeout);
             this.pc.addEventListener("icegatheringstatechange", onStateChange);
+            this.destroyed.catch(done);
         });
+    }
+
+    private localDescription(): RTCSessionDescriptionInit {
+        this.ensureOpen();
+        const description = this.pc.localDescription;
+        if (!description) throw new Error("Missing local RTC session description");
+        return description.toJSON();
     }
 
     private reportError(error: unknown): void {
@@ -231,11 +235,4 @@ const validateRange = (name: string, value: number, max: number): number => {
         throw new RangeError(`${name} must be between 0 and ${max}`);
     }
     return value;
-};
-
-const descriptionToJSON = (
-    description: RTCSessionDescription | null,
-): RTCSessionDescriptionInit => {
-    if (!description) throw new Error("Missing local RTC session description");
-    return description.toJSON();
 };
