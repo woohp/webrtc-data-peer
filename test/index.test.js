@@ -339,7 +339,7 @@ test("destroy after ICE completes still rejects the pending offer", async () => 
     await new Promise(setImmediate);
     peer.pc.iceGatheringState = "complete";
     peer.pc.dispatch("icegatheringstatechange");
-    queueMicrotask(() => peer.destroy());
+    peer.destroy();
 
     await assert.rejects(creatingOffer, /WebRTC data peer is closed/);
 });
