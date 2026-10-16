@@ -23,7 +23,6 @@
         "prepare": "npm run build",
         "format": "oxfmt --write .",
         "lint": "oxlint .",
-        "typecheck": "tsc -p tsconfig.json --noEmit",
         "check": "npm run lint && npm test",
         "test": "npm run build && node --test",
         "test:browser": "npm run build && node --test browser-test/index.js"

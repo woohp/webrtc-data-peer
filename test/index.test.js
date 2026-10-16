@@ -319,17 +319,27 @@ test("destroy cancels active ICE waits", async (context) => {
     assert.equal(events.closes, 1);
 });
 
-test("negotiation cannot complete after destroy", async () => {
-    let resolveOffer;
-    class DeferredOfferPeerConnection extends FakePeerConnection {
+test("destroy rejects negotiation stuck in a native operation", async () => {
+    class StuckOfferPeerConnection extends FakePeerConnection {
         createOffer() {
-            return new Promise((resolve) => (resolveOffer = resolve));
+            return new Promise(() => {});
         }
     }
-    const { peer } = createPeer({ RTCPeerConnection: DeferredOfferPeerConnection });
+    const { peer } = createPeer({ RTCPeerConnection: StuckOfferPeerConnection });
     const creatingOffer = peer.createOffer();
     peer.destroy();
-    resolveOffer({ type: "offer", sdp: "late" });
+
+    await assert.rejects(creatingOffer, /WebRTC data peer is closed/);
+});
+
+test("destroy after ICE completes still rejects the pending offer", async () => {
+    const { peer } = createPeer();
+    peer.pc.iceGatheringState = "gathering";
+    const creatingOffer = peer.createOffer();
+    await new Promise(setImmediate);
+    peer.pc.iceGatheringState = "complete";
+    peer.pc.dispatch("icegatheringstatechange");
+    queueMicrotask(() => peer.destroy());
 
     await assert.rejects(creatingOffer, /WebRTC data peer is closed/);
 });
